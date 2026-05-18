@@ -1,0 +1,4 @@
+node_modules/
+uploads/
+renders/*.mp4
+.DS_Store

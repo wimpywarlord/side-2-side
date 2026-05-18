@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Side 2 Side</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="workspace" aria-label="Video render workspace">
+        <header class="topbar">
+          <div>
+            <p class="eyebrow">FFmpeg stacker</p>
+            <h1>Side 2 Side</h1>
+          </div>
+          <div class="status-pill" id="healthPill">Port 3020</div>
+        </header>
+
+        <div class="tool-grid">
+          <section class="panel input-panel" aria-label="Video input">
+            <div class="section-heading">
+              <h2>Videos</h2>
+              <button class="small-button" id="clearButton" type="button">Clear</button>
+            </div>
+
+            <label class="drop-zone" id="dropZone" for="fileInput">
+              <input id="fileInput" type="file" accept="video/*,.mkv,.m4v" multiple />
+              <span class="drop-title">Drop videos</span>
+              <span class="drop-meta">MP4, MOV, WebM, MKV</span>
+            </label>
+
+            <div class="file-list" id="fileList" aria-live="polite"></div>
+          </section>
+
+          <section class="panel settings-panel" aria-label="Render settings">
+            <div class="section-heading">
+              <h2>Render</h2>
+              <span class="count" id="videoCount">0 files</span>
+            </div>
+
+            <div class="control-grid">
+              <label class="field">
+                <span>Output height</span>
+                <select id="heightSelect">
+                  <option value="720">720p</option>
+                  <option value="1080">1080p</option>
+                  <option value="1280" selected>1280px</option>
+                  <option value="1920">1920px</option>
+                </select>
+              </label>
+
+              <label class="field">
+                <span>Quality</span>
+                <select id="qualitySelect">
+                  <option value="18">High</option>
+                  <option value="20" selected>Balanced</option>
+                  <option value="24">Small</option>
+                </select>
+              </label>
+
+              <label class="field">
+                <span>Speed</span>
+                <select id="presetSelect">
+                  <option value="veryfast">Very fast</option>
+                  <option value="fast" selected>Fast</option>
+                  <option value="medium">Medium</option>
+                </select>
+              </label>
+
+              <label class="field">
+                <span>Audio</span>
+                <select id="audioSelect">
+                  <option value="first" selected>First video</option>
+                  <option value="none">No audio</option>
+                </select>
+              </label>
+            </div>
+
+            <div class="preview-strip" id="previewStrip" aria-label="Stack preview"></div>
+
+            <div class="progress-wrap" id="progressWrap" hidden>
+              <div class="progress-label">
+                <span id="progressText">Preparing</span>
+                <span id="progressPercent">0%</span>
+              </div>
+              <div class="progress-track">
+                <div class="progress-bar" id="progressBar"></div>
+              </div>
+            </div>
+
+            <button class="render-button" id="renderButton" type="button" disabled>
+              Render side by side
+            </button>
+
+            <p class="message" id="message" role="status"></p>
+          </section>
+
+          <section class="result-panel" aria-label="Rendered result">
+            <div class="section-heading">
+              <h2>Output</h2>
+              <a class="download-link" id="downloadLink" href="#" download hidden>Download MP4</a>
+            </div>
+            <div class="result-stage" id="resultStage">
+              <div class="empty-output">Rendered video appears here</div>
+            </div>
+          </section>
+        </div>
+      </section>
+    </main>
+
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>
