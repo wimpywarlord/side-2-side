@@ -13,6 +13,7 @@ The app listens on <http://localhost:3020>.
 ## Render behavior
 
 - Upload two or more videos.
-- The server scales every input to the selected output height.
-- FFmpeg stacks them with `hstack`, left to right, with no gap.
+- Choose a row/column layout for a single line or an `N x M` grid.
+- The server scales every input into a fixed 9:16 tile at the selected tile height.
+- FFmpeg stacks each row with `hstack`, then stacks rows with `vstack`.
 - Audio can be copied from the first video or omitted.
