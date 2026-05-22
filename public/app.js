@@ -13,12 +13,18 @@ const progressBar = document.querySelector("#progressBar");
 const resultStage = document.querySelector("#resultStage");
 const downloadLink = document.querySelector("#downloadLink");
 const heightSelect = document.querySelector("#heightSelect");
+const rowsSelect = document.querySelector("#rowsSelect");
+const columnsSelect = document.querySelector("#columnsSelect");
 const qualitySelect = document.querySelector("#qualitySelect");
 const presetSelect = document.querySelector("#presetSelect");
 const audioSelect = document.querySelector("#audioSelect");
+const rowLayoutButton = document.querySelector("#rowLayoutButton");
+const autoLayoutButton = document.querySelector("#autoLayoutButton");
+const layoutHint = document.querySelector("#layoutHint");
 
 let videos = [];
 let isRendering = false;
+let layoutTouched = false;
 
 fileInput.addEventListener("change", (event) => {
   addFiles([...event.target.files]);
@@ -28,6 +34,9 @@ fileInput.addEventListener("change", (event) => {
 clearButton.addEventListener("click", () => {
   for (const video of videos) URL.revokeObjectURL(video.url);
   videos = [];
+  layoutTouched = false;
+  rowsSelect.value = "1";
+  columnsSelect.value = "2";
   setMessage("");
   render();
 });
@@ -51,6 +60,29 @@ renderButton.addEventListener("click", () => {
   renderVideos();
 });
 
+for (const select of [rowsSelect, columnsSelect]) {
+  select.addEventListener("change", () => {
+    layoutTouched = true;
+    setMessage("");
+    render();
+  });
+}
+
+rowLayoutButton.addEventListener("click", () => {
+  layoutTouched = true;
+  rowsSelect.value = "1";
+  columnsSelect.value = String(clamp(videos.length || 2, 1, 8));
+  setMessage("");
+  render();
+});
+
+autoLayoutButton.addEventListener("click", () => {
+  layoutTouched = true;
+  setLayout(autoGrid(videos.length || 2));
+  setMessage("");
+  render();
+});
+
 function addFiles(files) {
   const videoFiles = files.filter((file) => file.type.startsWith("video/") || /\.(mkv|m4v)$/i.test(file.name));
 
@@ -68,16 +100,22 @@ function addFiles(files) {
     }))
   ];
 
+  syncDefaultLayout();
   setMessage("");
   render();
 }
 
 function render() {
+  syncDefaultLayout();
+  const layout = getLayout();
+  const hasEnoughCells = layout.capacity >= videos.length;
+
   videoCount.textContent = `${videos.length} ${videos.length === 1 ? "file" : "files"}`;
-  renderButton.disabled = videos.length < 2 || isRendering;
+  renderButton.disabled = videos.length < 2 || isRendering || !hasEnoughCells;
   clearButton.disabled = videos.length === 0 || isRendering;
+  updateLayoutHint(layout, hasEnoughCells);
   renderFileList();
-  renderPreview();
+  renderPreview(layout);
 }
 
 function renderFileList() {
@@ -117,8 +155,9 @@ function renderFileList() {
   }
 }
 
-function renderPreview() {
+function renderPreview(layout) {
   previewStrip.replaceChildren();
+  previewStrip.style.setProperty("--preview-columns", String(layout.columns));
 
   if (!videos.length) {
     const empty = document.createElement("div");
@@ -128,9 +167,17 @@ function renderPreview() {
     return;
   }
 
-  for (const video of videos) {
+  for (let index = 0; index < layout.capacity; index += 1) {
     const tile = document.createElement("div");
     tile.className = "preview-tile";
+
+    const video = videos[index];
+    if (!video) {
+      tile.classList.add("is-empty");
+      tile.textContent = "Empty";
+      previewStrip.append(tile);
+      continue;
+    }
 
     const preview = document.createElement("video");
     preview.src = video.url;
@@ -175,6 +222,12 @@ function removeVideo(id) {
 
 function renderVideos() {
   if (videos.length < 2 || isRendering) return;
+  const layout = getLayout();
+
+  if (layout.capacity < videos.length) {
+    setMessage(`The ${layout.rows} x ${layout.columns} grid needs more cells.`, "error");
+    return;
+  }
 
   isRendering = true;
   render();
@@ -188,6 +241,8 @@ function renderVideos() {
     formData.append("videos", video.file, video.file.name);
   }
   formData.append("height", heightSelect.value);
+  formData.append("rows", String(layout.rows));
+  formData.append("columns", String(layout.columns));
   formData.append("quality", qualitySelect.value);
   formData.append("preset", presetSelect.value);
   formData.append("audio", audioSelect.value);
@@ -254,6 +309,46 @@ function setProgress(percent, text) {
 function setMessage(text, type = "") {
   message.textContent = text;
   message.className = `message ${type ? `is-${type}` : ""}`.trim();
+}
+
+function syncDefaultLayout() {
+  if (layoutTouched) return;
+  const count = Math.max(2, videos.length);
+  rowsSelect.value = "1";
+  columnsSelect.value = String(clamp(count, 1, 8));
+}
+
+function getLayout() {
+  const rows = clamp(Number(rowsSelect.value), 1, 8);
+  const columns = clamp(Number(columnsSelect.value), 1, 8);
+  return {
+    rows,
+    columns,
+    capacity: rows * columns
+  };
+}
+
+function setLayout(layout) {
+  rowsSelect.value = String(layout.rows);
+  columnsSelect.value = String(layout.columns);
+}
+
+function autoGrid(count) {
+  const columns = clamp(Math.ceil(Math.sqrt(count)), 1, 8);
+  const rows = clamp(Math.ceil(count / columns), 1, 8);
+  return { rows, columns };
+}
+
+function updateLayoutHint(layout, hasEnoughCells) {
+  const label = `${layout.rows} x ${layout.columns} grid`;
+  const cells = `${layout.capacity} ${layout.capacity === 1 ? "cell" : "cells"}`;
+  layoutHint.textContent = videos.length ? `${label}, ${cells}` : "Choose a layout";
+  layoutHint.classList.toggle("is-error", Boolean(videos.length && !hasEnoughCells));
+}
+
+function clamp(value, min, max) {
+  if (!Number.isFinite(value)) return min;
+  return Math.min(max, Math.max(min, Math.round(value)));
 }
 
 function formatBytes(bytes) {
