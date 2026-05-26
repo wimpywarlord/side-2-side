@@ -13,13 +13,20 @@ const MAX_UPLOAD_BYTES = Number(process.env.MAX_UPLOAD_BYTES || 1_500_000_000);
 const PUBLIC_DIR = path.join(__dirname, "public");
 const UPLOAD_DIR = path.join(__dirname, "uploads");
 const RENDER_DIR = path.join(__dirname, "renders");
-const MAX_GRID_SIDE = 8;
+const MAX_INPUT_VIDEOS = 120;
+const MAX_GRID_SIDE = 120;
+const MAX_GRID_CELLS = 120;
+const MAX_GAP = 128;
+const MIN_THUMBNAIL_CELL_SIZE = 8;
 
 const CONTENT_TYPES = {
   ".html": "text/html; charset=utf-8",
   ".css": "text/css; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
   ".json": "application/json; charset=utf-8",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".png": "image/png",
   ".mp4": "video/mp4",
   ".mov": "video/quicktime",
   ".webm": "video/webm",
@@ -38,7 +45,11 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === "POST" && url.pathname === "/api/render") {
-      return handleRender(req, res);
+      return await handleRender(req, res);
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/twitter-thumbnail") {
+      return await handleTwitterThumbnail(req, res);
     }
 
     const isFileRequest = req.method === "GET" || req.method === "HEAD";
@@ -73,31 +84,22 @@ server.listen(PORT, () => {
 });
 
 async function handleRender(req, res) {
-  const contentType = req.headers["content-type"] || "";
-  const boundary = getBoundary(contentType);
-
-  if (!boundary) {
-    return sendJson(res, 400, { error: "Expected a multipart upload." });
-  }
-
-  const body = await readRequestBody(req);
-  const parts = parseMultipartBody(body, boundary);
-  const files = parts.filter((part) => part.filename && part.data.length > 0);
+  const { files, fields } = await readMultipartUpload(req);
 
   if (files.length < 2) {
     return sendJson(res, 400, { error: "Add at least two video files." });
   }
 
-  const fields = Object.fromEntries(
-    parts
-      .filter((part) => !part.filename)
-      .map((part) => [part.name, part.data.toString("utf8").trim()])
-  );
+  if (files.length > MAX_INPUT_VIDEOS) {
+    return sendJson(res, 400, { error: `Add ${MAX_INPUT_VIDEOS} videos or fewer.` });
+  }
 
   const height = makeEven(clampNumber(fields.height, 360, 3840, 1280));
   const rows = clampNumber(fields.rows, 1, MAX_GRID_SIDE, 1);
   const columns = clampNumber(fields.columns, 1, MAX_GRID_SIDE, files.length);
   const cellCount = rows * columns;
+  const gap = makeEvenDown(clampNumber(fields.gap, 0, MAX_GAP, 0));
+  const fit = fields.fit === "contain" ? "contain" : "cover";
   const crf = clampNumber(fields.quality, 16, 32, 20);
   const preset = ["ultrafast", "veryfast", "faster", "fast", "medium", "slow"].includes(fields.preset)
     ? fields.preset
@@ -108,6 +110,10 @@ async function handleRender(req, res) {
     return sendJson(res, 400, {
       error: `The ${rows} x ${columns} grid only has ${cellCount} cells for ${files.length} videos.`
     });
+  }
+
+  if (cellCount > MAX_GRID_CELLS) {
+    return sendJson(res, 400, { error: `Choose a layout with ${MAX_GRID_CELLS} cells or fewer.` });
   }
 
   const jobId = `${Date.now()}-${crypto.randomUUID().slice(0, 8)}`;
@@ -129,7 +135,7 @@ async function handleRender(req, res) {
 
   const outputFilename = `side-by-side-${jobId}.mp4`;
   const outputPath = path.join(RENDER_DIR, outputFilename);
-  const result = await renderWithFfmpeg(inputPaths, outputPath, { height, rows, columns, crf, preset, audio });
+  const result = await renderWithFfmpeg(inputPaths, outputPath, { height, rows, columns, gap, fit, crf, preset, audio });
 
   await Promise.all(inputPaths.map((inputPath) => unlink(inputPath).catch(() => {})));
   await rm(jobDir, { recursive: true, force: true });
@@ -139,7 +145,71 @@ async function handleRender(req, res) {
     filename: outputFilename,
     url: `/renders/${encodeURIComponent(outputFilename)}`,
     downloadUrl: `/download/${encodeURIComponent(outputFilename)}`,
-    settings: { height, rows, columns, crf, preset, audio, inputs: inputPaths.length },
+    settings: { height, rows, columns, gap, fit, crf, preset, audio, inputs: inputPaths.length },
+    log: trimFfmpegLog(result.stderr)
+  });
+}
+
+async function handleTwitterThumbnail(req, res) {
+  const { files, fields } = await readMultipartUpload(req);
+
+  if (files.length < 1) {
+    return sendJson(res, 400, { error: "Add at least one video file." });
+  }
+
+  if (files.length > MAX_INPUT_VIDEOS) {
+    return sendJson(res, 400, { error: `Add ${MAX_INPUT_VIDEOS} videos or fewer.` });
+  }
+
+  const width = 1200;
+  const height = 600;
+  const rows = clampNumber(fields.rows, 1, MAX_GRID_SIDE, 1);
+  const columns = clampNumber(fields.columns, 1, MAX_GRID_SIDE, files.length);
+  const cellCount = rows * columns;
+  const gap = thumbnailGap(fields.gap, rows, columns, width, height);
+  const fit = fields.fit === "contain" ? "contain" : "cover";
+
+  if (cellCount < files.length) {
+    return sendJson(res, 400, {
+      error: `The ${rows} x ${columns} grid only has ${cellCount} cells for ${files.length} videos.`
+    });
+  }
+
+  if (cellCount > MAX_GRID_CELLS) {
+    return sendJson(res, 400, { error: `Choose a layout with ${MAX_GRID_CELLS} cells or fewer.` });
+  }
+
+  const jobId = `${Date.now()}-${crypto.randomUUID().slice(0, 8)}`;
+  const jobDir = path.join(UPLOAD_DIR, jobId);
+  await mkdir(jobDir, { recursive: true });
+
+  const inputPaths = [];
+  for (let index = 0; index < files.length; index += 1) {
+    const file = files[index];
+    const ext = videoExtension(file.filename);
+    if (!ext) {
+      return sendJson(res, 400, { error: `${file.filename} is not a supported video file.` });
+    }
+
+    const inputPath = path.join(jobDir, `${String(index + 1).padStart(2, "0")}-${safeFilename(file.filename, ext)}`);
+    await writeFile(inputPath, file.data);
+    inputPaths.push(inputPath);
+  }
+
+  const outputFilename = `twitter-article-thumbnail-${jobId}.png`;
+  const outputPath = path.join(RENDER_DIR, outputFilename);
+  const result = await renderTwitterThumbnail(inputPaths, outputPath, { width, height, rows, columns, gap, fit });
+
+  await Promise.all(inputPaths.map((inputPath) => unlink(inputPath).catch(() => {})));
+  await rm(jobDir, { recursive: true, force: true });
+
+  sendJson(res, 200, {
+    ok: true,
+    filename: outputFilename,
+    url: `/renders/${encodeURIComponent(outputFilename)}`,
+    downloadUrl: `/download/${encodeURIComponent(outputFilename)}`,
+    kind: "twitter-thumbnail",
+    settings: { width, height, rows, columns, gap, fit, inputs: inputPaths.length },
     log: trimFfmpegLog(result.stderr)
   });
 }
@@ -186,34 +256,34 @@ function renderWithFfmpeg(inputPaths, outputPath, options) {
 
   const cellWidth = makeEven(Math.round(options.height * 9 / 16));
   const cellCount = options.rows * options.columns;
+  const gap = options.gap || 0;
   const filters = [];
 
   for (let index = 0; index < cellCount; index += 1) {
     if (index < inputPaths.length) {
       filters.push(
-        `[${index}:v]scale=${cellWidth}:${options.height}:force_original_aspect_ratio=decrease,` +
-          `pad=${cellWidth}:${options.height}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1[cell${index}]`
+        videoCellFilter(`[${index}:v]`, `cell${index}`, {
+          width: cellWidth,
+          height: options.height,
+          fit: options.fit,
+          background: "black"
+        })
       );
     } else {
       filters.push(`color=c=black:s=${cellWidth}x${options.height},setsar=1[cell${index}]`);
     }
   }
 
-  for (let row = 0; row < options.rows; row += 1) {
-    const rowCells = Array.from({ length: options.columns }, (_, column) => `[cell${row * options.columns + column}]`).join("");
-    if (options.columns === 1) {
-      filters.push(`${rowCells}null[row${row}]`);
-    } else {
-      filters.push(`${rowCells}hstack=inputs=${options.columns}:shortest=1[row${row}]`);
-    }
-  }
-
-  const rowInputs = Array.from({ length: options.rows }, (_, row) => `[row${row}]`).join("");
-  if (options.rows === 1) {
-    filters.push(`${rowInputs}null[outv]`);
-  } else {
-    filters.push(`${rowInputs}vstack=inputs=${options.rows}:shortest=1[outv]`);
-  }
+  stackGridWithXstack(filters, {
+    rows: options.rows,
+    columns: options.columns,
+    cellWidth,
+    cellHeight: options.height,
+    gap,
+    outputLabel: "outv",
+    fill: "black",
+    shortest: true
+  });
 
   const filter = filters.join(";");
 
@@ -267,6 +337,133 @@ function renderWithFfmpeg(inputPaths, outputPath, options) {
       }
     });
   });
+}
+
+function renderTwitterThumbnail(inputPaths, outputPath, options) {
+  const args = ["-y"];
+  for (const inputPath of inputPaths) {
+    args.push("-i", inputPath);
+  }
+
+  const gap = options.gap || 0;
+  const cellWidth = Math.max(1, Math.floor((options.width - gap * (options.columns - 1)) / options.columns));
+  const cellHeight = Math.max(1, Math.floor((options.height - gap * (options.rows - 1)) / options.rows));
+  const cellCount = options.rows * options.columns;
+  const canvasColor = "0x080808";
+  const filters = [];
+
+  for (let index = 0; index < cellCount; index += 1) {
+    if (index < inputPaths.length) {
+      filters.push(
+        videoCellFilter(`[${index}:v]trim=start_frame=0:end_frame=1,setpts=PTS-STARTPTS`, `cell${index}`, {
+          width: cellWidth,
+          height: cellHeight,
+          fit: options.fit,
+          background: canvasColor
+        })
+      );
+    } else {
+      filters.push(`color=c=${canvasColor}:s=${cellWidth}x${cellHeight}:d=1,setsar=1[cell${index}]`);
+    }
+  }
+
+  stackGridWithXstack(filters, {
+    rows: options.rows,
+    columns: options.columns,
+    cellWidth,
+    cellHeight,
+    gap,
+    outputLabel: "grid",
+    fill: canvasColor,
+    shortest: false
+  });
+
+  filters.push(
+    `[grid]pad=${options.width}:${options.height}:(ow-iw)/2:(oh-ih)/2:color=${canvasColor},format=rgb24[outv]`
+  );
+
+  args.push("-filter_complex", filters.join(";"), "-map", "[outv]", "-frames:v", "1", "-update", "1", outputPath);
+
+  return new Promise((resolve, reject) => {
+    const ffmpeg = spawn("ffmpeg", args);
+    let stderr = "";
+
+    ffmpeg.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+      if (stderr.length > 80_000) stderr = stderr.slice(-80_000);
+    });
+
+    ffmpeg.on("error", (error) => {
+      error.publicMessage = "FFmpeg could not start. Make sure ffmpeg is installed.";
+      reject(error);
+    });
+
+    ffmpeg.on("close", (code) => {
+      if (code === 0) {
+        resolve({ stderr, args });
+      } else {
+        const error = new Error(`FFmpeg exited with code ${code}`);
+        error.statusCode = 500;
+        error.publicMessage = "FFmpeg could not make the thumbnail image.";
+        error.stderr = stderr;
+        error.args = args;
+        reject(error);
+      }
+    });
+  });
+}
+
+function videoCellFilter(inputLabel, outputLabel, options) {
+  const scaleMode = options.fit === "contain" ? "decrease" : "increase";
+  const fitFilter =
+    options.fit === "contain"
+      ? `pad=${options.width}:${options.height}:(ow-iw)/2:(oh-ih)/2:color=${options.background}`
+      : `crop=${options.width}:${options.height}:(iw-ow)/2:(ih-oh)/2`;
+
+  return `${inputLabel},scale=${options.width}:${options.height}:force_original_aspect_ratio=${scaleMode},${fitFilter},setsar=1[${outputLabel}]`;
+}
+
+function stackGridWithXstack(filters, options) {
+  const cellCount = options.rows * options.columns;
+
+  if (cellCount === 1) {
+    filters.push(`[cell0]null[${options.outputLabel}]`);
+    return;
+  }
+
+  const inputs = Array.from({ length: cellCount }, (_, index) => `[cell${index}]`).join("");
+  const layout = Array.from({ length: cellCount }, (_, index) => {
+    const column = index % options.columns;
+    const row = Math.floor(index / options.columns);
+    return `${column * (options.cellWidth + options.gap)}_${row * (options.cellHeight + options.gap)}`;
+  }).join("|");
+  const xstackOptions = [`inputs=${cellCount}`, `layout=${layout}`, `fill=${options.fill}`];
+  if (options.shortest) xstackOptions.push("shortest=1");
+
+  filters.push(`${inputs}xstack=${xstackOptions.join(":")}[${options.outputLabel}]`);
+}
+
+async function readMultipartUpload(req) {
+  const contentType = req.headers["content-type"] || "";
+  const boundary = getBoundary(contentType);
+
+  if (!boundary) {
+    const error = new Error("Expected a multipart upload.");
+    error.statusCode = 400;
+    error.publicMessage = "Expected a multipart upload.";
+    throw error;
+  }
+
+  const body = await readRequestBody(req);
+  const parts = parseMultipartBody(body, boundary);
+  const files = parts.filter((part) => part.filename && part.data.length > 0);
+  const fields = Object.fromEntries(
+    parts
+      .filter((part) => !part.filename)
+      .map((part) => [part.name, part.data.toString("utf8").trim()])
+  );
+
+  return { files, fields };
 }
 
 async function readRequestBody(req) {
@@ -377,6 +574,20 @@ function clampNumber(value, min, max, fallback) {
 
 function makeEven(value) {
   return value % 2 === 0 ? value : value + 1;
+}
+
+function makeEvenDown(value) {
+  return value % 2 === 0 ? value : value - 1;
+}
+
+function thumbnailGap(value, rows, columns, width, height) {
+  const requested = makeEvenDown(clampNumber(value, 0, MAX_GAP, 0));
+  const maxHorizontalGap =
+    columns > 1 ? Math.floor((width - columns * MIN_THUMBNAIL_CELL_SIZE) / (columns - 1)) : MAX_GAP;
+  const maxVerticalGap =
+    rows > 1 ? Math.floor((height - rows * MIN_THUMBNAIL_CELL_SIZE) / (rows - 1)) : MAX_GAP;
+  const maxGap = Math.max(0, Math.min(MAX_GAP, maxHorizontalGap, maxVerticalGap));
+  return Math.max(0, makeEvenDown(Math.min(requested, maxGap)));
 }
 
 function videoExtension(filename) {

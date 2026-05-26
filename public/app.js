@@ -3,6 +3,7 @@ const dropZone = document.querySelector("#dropZone");
 const fileList = document.querySelector("#fileList");
 const previewStrip = document.querySelector("#previewStrip");
 const renderButton = document.querySelector("#renderButton");
+const thumbnailButton = document.querySelector("#thumbnailButton");
 const clearButton = document.querySelector("#clearButton");
 const videoCount = document.querySelector("#videoCount");
 const message = document.querySelector("#message");
@@ -12,19 +13,32 @@ const progressPercent = document.querySelector("#progressPercent");
 const progressBar = document.querySelector("#progressBar");
 const resultStage = document.querySelector("#resultStage");
 const downloadLink = document.querySelector("#downloadLink");
+const healthPill = document.querySelector("#healthPill");
 const heightSelect = document.querySelector("#heightSelect");
 const rowsSelect = document.querySelector("#rowsSelect");
 const columnsSelect = document.querySelector("#columnsSelect");
 const qualitySelect = document.querySelector("#qualitySelect");
 const presetSelect = document.querySelector("#presetSelect");
 const audioSelect = document.querySelector("#audioSelect");
+const fitSelect = document.querySelector("#fitSelect");
+const gapRange = document.querySelector("#gapRange");
+const gapValue = document.querySelector("#gapValue");
 const rowLayoutButton = document.querySelector("#rowLayoutButton");
 const autoLayoutButton = document.querySelector("#autoLayoutButton");
 const layoutHint = document.querySelector("#layoutHint");
 
+const MAX_VIDEOS = 120;
+const MAX_GRID_SIDE = 120;
+const MAX_GRID_CELLS = 120;
+const MAX_GAP = 64;
+const TARGET_GRID_RATIO = 2 / (9 / 16);
+
 let videos = [];
 let isRendering = false;
 let layoutTouched = false;
+
+populateNumberSelect(rowsSelect, 1, MAX_GRID_SIDE, 1);
+populateNumberSelect(columnsSelect, 1, MAX_GRID_SIDE, 2);
 
 fileInput.addEventListener("change", (event) => {
   addFiles([...event.target.files]);
@@ -60,6 +74,10 @@ renderButton.addEventListener("click", () => {
   renderVideos();
 });
 
+thumbnailButton.addEventListener("click", () => {
+  renderTwitterThumbnail();
+});
+
 for (const select of [rowsSelect, columnsSelect]) {
   select.addEventListener("change", () => {
     layoutTouched = true;
@@ -68,10 +86,19 @@ for (const select of [rowsSelect, columnsSelect]) {
   });
 }
 
+gapRange.addEventListener("input", () => {
+  updateGapValue();
+  render();
+});
+
+fitSelect.addEventListener("change", () => {
+  render();
+});
+
 rowLayoutButton.addEventListener("click", () => {
   layoutTouched = true;
   rowsSelect.value = "1";
-  columnsSelect.value = String(clamp(videos.length || 2, 1, 8));
+  columnsSelect.value = String(clamp(videos.length || 2, 1, MAX_GRID_SIDE));
   setMessage("");
   render();
 });
@@ -91,9 +118,17 @@ function addFiles(files) {
     return;
   }
 
+  const availableSlots = Math.max(0, MAX_VIDEOS - videos.length);
+  const acceptedFiles = videoFiles.slice(0, availableSlots);
+
+  if (!acceptedFiles.length) {
+    setMessage(`This batch is capped at ${MAX_VIDEOS} videos.`, "error");
+    return;
+  }
+
   videos = [
     ...videos,
-    ...videoFiles.map((file) => ({
+    ...acceptedFiles.map((file) => ({
       id: crypto.randomUUID(),
       file,
       url: URL.createObjectURL(file)
@@ -101,7 +136,11 @@ function addFiles(files) {
   ];
 
   syncDefaultLayout();
-  setMessage("");
+  setMessage(
+    acceptedFiles.length < videoFiles.length
+      ? `Loaded ${acceptedFiles.length} of ${videoFiles.length} videos. Max ${MAX_VIDEOS}.`
+      : ""
+  );
   render();
 }
 
@@ -109,11 +148,14 @@ function render() {
   syncDefaultLayout();
   const layout = getLayout();
   const hasEnoughCells = layout.capacity >= videos.length;
+  const hasSupportedCells = layout.capacity <= MAX_GRID_CELLS;
+  const canExport = hasEnoughCells && hasSupportedCells;
 
   videoCount.textContent = `${videos.length} ${videos.length === 1 ? "file" : "files"}`;
-  renderButton.disabled = videos.length < 2 || isRendering || !hasEnoughCells;
+  renderButton.disabled = videos.length < 2 || isRendering || !canExport;
+  thumbnailButton.disabled = videos.length < 1 || isRendering || !canExport;
   clearButton.disabled = videos.length === 0 || isRendering;
-  updateLayoutHint(layout, hasEnoughCells);
+  updateLayoutHint(layout, hasEnoughCells, hasSupportedCells);
   renderFileList();
   renderPreview(layout);
 }
@@ -158,6 +200,11 @@ function renderFileList() {
 function renderPreview(layout) {
   previewStrip.replaceChildren();
   previewStrip.style.setProperty("--preview-columns", String(layout.columns));
+  previewStrip.style.setProperty("--preview-rows", String(layout.rows));
+  previewStrip.style.setProperty("--preview-gap", `${previewGap(getGap())}px`);
+  previewStrip.classList.toggle("is-cover-fit", getFit() === "cover");
+  previewStrip.classList.toggle("is-dense", layout.capacity > 36);
+  previewStrip.classList.toggle("is-very-dense", layout.capacity > 80);
 
   if (!videos.length) {
     const empty = document.createElement("div");
@@ -174,7 +221,7 @@ function renderPreview(layout) {
     const video = videos[index];
     if (!video) {
       tile.classList.add("is-empty");
-      tile.textContent = "Empty";
+      tile.textContent = layout.capacity <= 36 ? "Empty" : "";
       previewStrip.append(tile);
       continue;
     }
@@ -182,9 +229,7 @@ function renderPreview(layout) {
     const preview = document.createElement("video");
     preview.src = video.url;
     preview.muted = true;
-    preview.loop = true;
     preview.playsInline = true;
-    preview.autoplay = true;
     preview.preload = "metadata";
 
     tile.append(preview);
@@ -229,6 +274,46 @@ function renderVideos() {
     return;
   }
 
+  if (layout.capacity > MAX_GRID_CELLS) {
+    setMessage(`Use ${MAX_GRID_CELLS} grid cells or fewer.`, "error");
+    return;
+  }
+
+  submitJob({
+    endpoint: "/api/render",
+    formData: buildJobFormData(layout),
+    workingLabel: "Rendering",
+    completeMessage: "Render complete.",
+    failureMessage: "Render failed.",
+    showResult: showVideoOutput
+  });
+}
+
+function renderTwitterThumbnail() {
+  if (!videos.length || isRendering) return;
+  const layout = getLayout();
+
+  if (layout.capacity < videos.length) {
+    setMessage(`The ${layout.rows} x ${layout.columns} grid needs more cells.`, "error");
+    return;
+  }
+
+  if (layout.capacity > MAX_GRID_CELLS) {
+    setMessage(`Use ${MAX_GRID_CELLS} grid cells or fewer.`, "error");
+    return;
+  }
+
+  submitJob({
+    endpoint: "/api/twitter-thumbnail",
+    formData: buildJobFormData(layout),
+    workingLabel: "Composing",
+    completeMessage: "Thumbnail ready.",
+    failureMessage: "Thumbnail failed.",
+    showResult: showImageOutput
+  });
+}
+
+function submitJob({ endpoint, formData, workingLabel, completeMessage, failureMessage, showResult }) {
   isRendering = true;
   render();
   setMessage("Uploading videos.");
@@ -236,24 +321,13 @@ function renderVideos() {
   progressWrap.hidden = false;
   downloadLink.hidden = true;
 
-  const formData = new FormData();
-  for (const video of videos) {
-    formData.append("videos", video.file, video.file.name);
-  }
-  formData.append("height", heightSelect.value);
-  formData.append("rows", String(layout.rows));
-  formData.append("columns", String(layout.columns));
-  formData.append("quality", qualitySelect.value);
-  formData.append("preset", presetSelect.value);
-  formData.append("audio", audioSelect.value);
-
   const request = new XMLHttpRequest();
-  request.open("POST", "/api/render");
+  request.open("POST", endpoint);
 
   request.upload.addEventListener("progress", (event) => {
     if (!event.lengthComputable) return;
     const percent = Math.round((event.loaded / event.total) * 92);
-    setProgress(percent, percent >= 92 ? "Rendering" : "Uploading");
+    setProgress(percent, percent >= 92 ? workingLabel : "Uploading");
   });
 
   request.addEventListener("load", () => {
@@ -269,13 +343,13 @@ function renderVideos() {
 
     if (request.status >= 200 && request.status < 300 && payload.url) {
       setProgress(100, "Complete");
-      showOutput(payload.url, payload.downloadUrl, payload.filename);
-      setMessage("Render complete.", "success");
+      showResult(payload.url, payload.downloadUrl, payload.filename);
+      setMessage(completeMessage, "success");
       return;
     }
 
     progressWrap.hidden = true;
-    setMessage(payload.error || "Render failed.", "error");
+    setMessage(payload.error || failureMessage, "error");
   });
 
   request.addEventListener("error", () => {
@@ -288,7 +362,23 @@ function renderVideos() {
   request.send(formData);
 }
 
-function showOutput(url, downloadUrl, filename) {
+function buildJobFormData(layout) {
+  const formData = new FormData();
+  for (const video of videos) {
+    formData.append("videos", video.file, video.file.name);
+  }
+  formData.append("height", heightSelect.value);
+  formData.append("rows", String(layout.rows));
+  formData.append("columns", String(layout.columns));
+  formData.append("quality", qualitySelect.value);
+  formData.append("preset", presetSelect.value);
+  formData.append("audio", audioSelect.value);
+  formData.append("fit", getFit());
+  formData.append("gap", String(getGap()));
+  return formData;
+}
+
+function showVideoOutput(url, downloadUrl, filename) {
   const video = document.createElement("video");
   video.src = `${url}?t=${Date.now()}`;
   video.controls = true;
@@ -297,6 +387,19 @@ function showOutput(url, downloadUrl, filename) {
   resultStage.replaceChildren(video);
   downloadLink.href = downloadUrl || url;
   downloadLink.download = filename || "side-by-side.mp4";
+  downloadLink.textContent = "Download MP4";
+  downloadLink.hidden = false;
+}
+
+function showImageOutput(url, downloadUrl, filename) {
+  const image = document.createElement("img");
+  image.src = `${url}?t=${Date.now()}`;
+  image.alt = "Twitter article thumbnail preview";
+
+  resultStage.replaceChildren(image);
+  downloadLink.href = downloadUrl || url;
+  downloadLink.download = filename || "twitter-article-thumbnail.png";
+  downloadLink.textContent = "Download PNG";
   downloadLink.hidden = false;
 }
 
@@ -312,20 +415,32 @@ function setMessage(text, type = "") {
 }
 
 function syncDefaultLayout() {
-  if (layoutTouched) return;
-  const count = Math.max(2, videos.length);
-  rowsSelect.value = "1";
-  columnsSelect.value = String(clamp(count, 1, 8));
+  const count = videos.length || 2;
+  const layout = getLayout();
+  const needsAutoLayout =
+    !layoutTouched || (videos.length > 0 && (layout.capacity < videos.length || layout.capacity > MAX_GRID_CELLS));
+
+  if (needsAutoLayout) {
+    setLayout(autoGrid(count));
+  }
 }
 
 function getLayout() {
-  const rows = clamp(Number(rowsSelect.value), 1, 8);
-  const columns = clamp(Number(columnsSelect.value), 1, 8);
+  const rows = clamp(Number(rowsSelect.value), 1, MAX_GRID_SIDE);
+  const columns = clamp(Number(columnsSelect.value), 1, MAX_GRID_SIDE);
   return {
     rows,
     columns,
     capacity: rows * columns
   };
+}
+
+function getGap() {
+  return clamp(Number(gapRange.value), 0, MAX_GAP);
+}
+
+function getFit() {
+  return fitSelect.value === "contain" ? "contain" : "cover";
 }
 
 function setLayout(layout) {
@@ -334,16 +449,44 @@ function setLayout(layout) {
 }
 
 function autoGrid(count) {
-  const columns = clamp(Math.ceil(Math.sqrt(count)), 1, 8);
-  const rows = clamp(Math.ceil(count / columns), 1, 8);
-  return { rows, columns };
+  const targetCount = clamp(count, 1, MAX_VIDEOS);
+  let best = { rows: 1, columns: targetCount, score: Number.POSITIVE_INFINITY };
+
+  for (let rows = 1; rows <= MAX_GRID_SIDE; rows += 1) {
+    const minColumns = Math.ceil(targetCount / rows);
+    const maxColumns = Math.min(MAX_GRID_SIDE, Math.floor(MAX_GRID_CELLS / rows));
+
+    for (let columns = minColumns; columns <= maxColumns; columns += 1) {
+      const capacity = rows * columns;
+      if (capacity < targetCount || capacity > MAX_GRID_CELLS) continue;
+
+      const ratioPenalty = Math.abs(Math.log((columns / rows) / TARGET_GRID_RATIO));
+      const emptyPenalty = ((capacity - targetCount) / targetCount) * 1.4;
+      const score = ratioPenalty + emptyPenalty;
+
+      if (score < best.score) {
+        best = { rows, columns, score };
+      }
+    }
+  }
+
+  return { rows: best.rows, columns: best.columns };
 }
 
-function updateLayoutHint(layout, hasEnoughCells) {
+function updateLayoutHint(layout, hasEnoughCells, hasSupportedCells) {
   const label = `${layout.rows} x ${layout.columns} grid`;
   const cells = `${layout.capacity} ${layout.capacity === 1 ? "cell" : "cells"}`;
-  layoutHint.textContent = videos.length ? `${label}, ${cells}` : "Choose a layout";
-  layoutHint.classList.toggle("is-error", Boolean(videos.length && !hasEnoughCells));
+  const gap = getGap();
+  const fit = getFit() === "cover" ? "fill" : "full";
+  const overflow = videos.length > MAX_VIDEOS;
+  let suffix = "";
+  if (!hasSupportedCells) suffix = `, max ${MAX_GRID_CELLS}`;
+  if (hasSupportedCells && !hasEnoughCells) suffix = `, ${videos.length - layout.capacity} over`;
+  if (!suffix && gap > 0) suffix = `, ${gap}px gap`;
+  if (!suffix && videos.length) suffix = `, ${fit}`;
+
+  layoutHint.textContent = videos.length ? `${label}, ${cells}${suffix}` : "Choose a layout";
+  layoutHint.classList.toggle("is-error", Boolean(videos.length && (!hasEnoughCells || !hasSupportedCells || overflow)));
 }
 
 function clamp(value, min, max) {
@@ -359,4 +502,36 @@ function formatBytes(bytes) {
   return `${value.toFixed(value >= 10 || exponent === 0 ? 0 : 1)} ${units[exponent]}`;
 }
 
+function populateNumberSelect(select, min, max, selectedValue) {
+  const fragment = document.createDocumentFragment();
+  for (let value = min; value <= max; value += 1) {
+    const option = document.createElement("option");
+    option.value = String(value);
+    option.textContent = String(value);
+    option.selected = value === selectedValue;
+    fragment.append(option);
+  }
+  select.replaceChildren(fragment);
+}
+
+function previewGap(gap) {
+  return Math.min(24, Math.round(gap / 3));
+}
+
+function updateGapValue() {
+  gapValue.textContent = `${getGap()} px`;
+}
+
+async function syncHealth() {
+  try {
+    const response = await fetch("/api/health");
+    const payload = await response.json();
+    healthPill.textContent = `Port ${payload.port}`;
+  } catch {
+    healthPill.textContent = "Local";
+  }
+}
+
+updateGapValue();
+syncHealth();
 render();

@@ -103,6 +103,19 @@
                   <option value="none">No audio</option>
                 </select>
               </label>
+
+              <label class="field">
+                <span>Fit</span>
+                <select id="fitSelect">
+                  <option value="cover" selected>Fill cells</option>
+                  <option value="contain">Full frame</option>
+                </select>
+              </label>
+
+              <label class="field range-field">
+                <span>Gap <output id="gapValue" for="gapRange">0 px</output></span>
+                <input id="gapRange" type="range" min="0" max="64" step="2" value="0" />
+              </label>
             </div>
 
             <div class="layout-actions">
@@ -123,9 +136,15 @@
               </div>
             </div>
 
-            <button class="render-button" id="renderButton" type="button" disabled>
-              Render side by side
-            </button>
+            <div class="export-actions">
+              <button class="render-button" id="renderButton" type="button" disabled>
+                Render side by side
+              </button>
+              <button class="thumbnail-button" id="thumbnailButton" type="button" disabled>
+                <span>Twitter article thumbnail</span>
+                <small>1200 x 600 PNG</small>
+              </button>
+            </div>
 
             <p class="message" id="message" role="status"></p>
           </section>
