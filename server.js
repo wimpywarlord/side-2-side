@@ -105,6 +105,7 @@ async function handleRender(req, res) {
     ? fields.preset
     : "fast";
   const audio = fields.audio === "none" ? "none" : "first";
+  const duration = fields.duration === "shortest" ? "shortest" : "longest";
 
   if (cellCount < files.length) {
     return sendJson(res, 400, {
@@ -135,7 +136,7 @@ async function handleRender(req, res) {
 
   const outputFilename = `side-by-side-${jobId}.mp4`;
   const outputPath = path.join(RENDER_DIR, outputFilename);
-  const result = await renderWithFfmpeg(inputPaths, outputPath, { height, rows, columns, gap, fit, crf, preset, audio });
+  const result = await renderWithFfmpeg(inputPaths, outputPath, { height, rows, columns, gap, fit, crf, preset, audio, duration });
 
   await Promise.all(inputPaths.map((inputPath) => unlink(inputPath).catch(() => {})));
   await rm(jobDir, { recursive: true, force: true });
@@ -145,7 +146,7 @@ async function handleRender(req, res) {
     filename: outputFilename,
     url: `/renders/${encodeURIComponent(outputFilename)}`,
     downloadUrl: `/download/${encodeURIComponent(outputFilename)}`,
-    settings: { height, rows, columns, gap, fit, crf, preset, audio, inputs: inputPaths.length },
+    settings: { height, rows, columns, gap, fit, crf, preset, audio, duration, inputs: inputPaths.length },
     log: trimFfmpegLog(result.stderr)
   });
 }
@@ -248,9 +249,19 @@ async function serveFile(res, filePath, options = {}) {
   }
 }
 
-function renderWithFfmpeg(inputPaths, outputPath, options) {
+async function renderWithFfmpeg(inputPaths, outputPath, options) {
+  // For "longest" mode, loop every input endlessly and cap the output at the
+  // longest source duration. Falls back to "shortest" if probing fails.
+  let targetDuration = 0;
+  if (options.duration === "longest") {
+    const durations = await Promise.all(inputPaths.map((inputPath) => probeDuration(inputPath)));
+    targetDuration = Math.max(0, ...durations.filter((value) => Number.isFinite(value) && value > 0));
+  }
+  const loopToLongest = targetDuration > 0;
+
   const args = ["-y"];
   for (const inputPath of inputPaths) {
+    if (loopToLongest) args.push("-stream_loop", "-1");
     args.push("-i", inputPath);
   }
 
@@ -282,7 +293,7 @@ function renderWithFfmpeg(inputPaths, outputPath, options) {
     gap,
     outputLabel: "outv",
     fill: "black",
-    shortest: true
+    shortest: !loopToLongest
   });
 
   const filter = filters.join(";");
@@ -305,10 +316,16 @@ function renderWithFfmpeg(inputPaths, outputPath, options) {
     "-pix_fmt",
     "yuv420p",
     "-movflags",
-    "+faststart",
-    "-shortest",
-    outputPath
+    "+faststart"
   );
+
+  if (loopToLongest) {
+    args.push("-t", targetDuration.toFixed(3));
+  } else {
+    args.push("-shortest");
+  }
+
+  args.push(outputPath);
 
   return new Promise((resolve, reject) => {
     const ffmpeg = spawn("ffmpeg", args);
@@ -413,14 +430,34 @@ function renderTwitterThumbnail(inputPaths, outputPath, options) {
   });
 }
 
+function probeDuration(inputPath) {
+  const args = ["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", inputPath];
+
+  return new Promise((resolve) => {
+    const ffprobe = spawn("ffprobe", args);
+    let stdout = "";
+
+    ffprobe.stdout.on("data", (chunk) => {
+      stdout += chunk.toString();
+    });
+
+    ffprobe.on("error", () => resolve(0));
+    ffprobe.on("close", (code) => {
+      const duration = Number.parseFloat(stdout.trim());
+      resolve(code === 0 && Number.isFinite(duration) ? duration : 0);
+    });
+  });
+}
+
 function videoCellFilter(inputLabel, outputLabel, options) {
   const scaleMode = options.fit === "contain" ? "decrease" : "increase";
+  const separator = inputLabel.endsWith("]") ? "" : ",";
   const fitFilter =
     options.fit === "contain"
       ? `pad=${options.width}:${options.height}:(ow-iw)/2:(oh-ih)/2:color=${options.background}`
       : `crop=${options.width}:${options.height}:(iw-ow)/2:(ih-oh)/2`;
 
-  return `${inputLabel},scale=${options.width}:${options.height}:force_original_aspect_ratio=${scaleMode},${fitFilter},setsar=1[${outputLabel}]`;
+  return `${inputLabel}${separator}scale=${options.width}:${options.height}:force_original_aspect_ratio=${scaleMode},${fitFilter},setsar=1[${outputLabel}]`;
 }
 
 function stackGridWithXstack(filters, options) {

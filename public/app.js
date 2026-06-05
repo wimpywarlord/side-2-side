@@ -20,6 +20,7 @@ const columnsSelect = document.querySelector("#columnsSelect");
 const qualitySelect = document.querySelector("#qualitySelect");
 const presetSelect = document.querySelector("#presetSelect");
 const audioSelect = document.querySelector("#audioSelect");
+const durationSelect = document.querySelector("#durationSelect");
 const fitSelect = document.querySelector("#fitSelect");
 const gapRange = document.querySelector("#gapRange");
 const gapValue = document.querySelector("#gapValue");
@@ -373,6 +374,7 @@ function buildJobFormData(layout) {
   formData.append("quality", qualitySelect.value);
   formData.append("preset", presetSelect.value);
   formData.append("audio", audioSelect.value);
+  formData.append("duration", durationSelect.value);
   formData.append("fit", getFit());
   formData.append("gap", String(getGap()));
   return formData;
