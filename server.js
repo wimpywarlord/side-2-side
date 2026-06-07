@@ -18,6 +18,9 @@ const MAX_GRID_SIDE = 120;
 const MAX_GRID_CELLS = 120;
 const MAX_GAP = 128;
 const MIN_THUMBNAIL_CELL_SIZE = 8;
+const VIDEO_EXTENSIONS = [".mp4", ".mov", ".webm", ".mkv", ".m4v"];
+const IMAGE_EXTENSIONS = [".jpg", ".jpeg", ".png", ".webp"];
+const IMAGE_ONLY_DURATION = 5;
 
 const CONTENT_TYPES = {
   ".html": "text/html; charset=utf-8",
@@ -30,7 +33,8 @@ const CONTENT_TYPES = {
   ".mp4": "video/mp4",
   ".mov": "video/quicktime",
   ".webm": "video/webm",
-  ".mkv": "video/x-matroska"
+  ".mkv": "video/x-matroska",
+  ".webp": "image/webp"
 };
 
 await mkdir(UPLOAD_DIR, { recursive: true });
@@ -87,7 +91,7 @@ async function handleRender(req, res) {
   const { files, fields } = await readMultipartUpload(req);
 
   if (files.length < 2) {
-    return sendJson(res, 400, { error: "Add at least two video files." });
+    return sendJson(res, 400, { error: "Add at least two video or image files." });
   }
 
   if (files.length > MAX_INPUT_VIDEOS) {
@@ -126,7 +130,7 @@ async function handleRender(req, res) {
     const file = files[index];
     const ext = videoExtension(file.filename);
     if (!ext) {
-      return sendJson(res, 400, { error: `${file.filename} is not a supported video file.` });
+      return sendJson(res, 400, { error: `${file.filename} is not a supported video or image file.` });
     }
 
     const inputPath = path.join(jobDir, `${String(index + 1).padStart(2, "0")}-${safeFilename(file.filename, ext)}`);
@@ -189,7 +193,7 @@ async function handleTwitterThumbnail(req, res) {
     const file = files[index];
     const ext = videoExtension(file.filename);
     if (!ext) {
-      return sendJson(res, 400, { error: `${file.filename} is not a supported video file.` });
+      return sendJson(res, 400, { error: `${file.filename} is not a supported video or image file.` });
     }
 
     const inputPath = path.join(jobDir, `${String(index + 1).padStart(2, "0")}-${safeFilename(file.filename, ext)}`);
@@ -250,20 +254,36 @@ async function serveFile(res, filePath, options = {}) {
 }
 
 async function renderWithFfmpeg(inputPaths, outputPath, options) {
-  // For "longest" mode, loop every input endlessly and cap the output at the
-  // longest source duration. Falls back to "shortest" if probing fails.
+  // Images become endless still streams (-loop 1); video durations drive the
+  // output length. "longest" loops shorter videos to the longest source,
+  // "shortest" trims to the shortest video. All-image renders get a fixed
+  // duration. Falls back to plain "shortest" if probing fails.
+  const imageFlags = inputPaths.map((inputPath) => isImagePath(inputPath));
+  const hasImages = imageFlags.some(Boolean);
+  const videoPaths = inputPaths.filter((_, index) => !imageFlags[index]);
+
   let targetDuration = 0;
-  if (options.duration === "longest") {
-    const durations = await Promise.all(inputPaths.map((inputPath) => probeDuration(inputPath)));
-    targetDuration = Math.max(0, ...durations.filter((value) => Number.isFinite(value) && value > 0));
+  if (options.duration === "longest" || hasImages) {
+    const durations = (await Promise.all(videoPaths.map((inputPath) => probeDuration(inputPath))))
+      .filter((value) => Number.isFinite(value) && value > 0);
+    if (durations.length) {
+      targetDuration = options.duration === "longest" ? Math.max(...durations) : Math.min(...durations);
+    } else if (!videoPaths.length) {
+      targetDuration = IMAGE_ONLY_DURATION;
+    }
   }
-  const loopToLongest = targetDuration > 0;
+  const useDurationCap = targetDuration > 0;
+  const loopVideos = useDurationCap && options.duration === "longest";
 
   const args = ["-y"];
-  for (const inputPath of inputPaths) {
-    if (loopToLongest) args.push("-stream_loop", "-1");
+  inputPaths.forEach((inputPath, index) => {
+    if (imageFlags[index]) {
+      args.push("-loop", "1");
+    } else if (loopVideos) {
+      args.push("-stream_loop", "-1");
+    }
     args.push("-i", inputPath);
-  }
+  });
 
   const cellWidth = makeEven(Math.round(options.height * 9 / 16));
   const cellCount = options.rows * options.columns;
@@ -293,7 +313,7 @@ async function renderWithFfmpeg(inputPaths, outputPath, options) {
     gap,
     outputLabel: "outv",
     fill: "black",
-    shortest: !loopToLongest
+    shortest: !useDurationCap
   });
 
   const filter = filters.join(";");
@@ -319,7 +339,7 @@ async function renderWithFfmpeg(inputPaths, outputPath, options) {
     "+faststart"
   );
 
-  if (loopToLongest) {
+  if (useDurationCap) {
     args.push("-t", targetDuration.toFixed(3));
   } else {
     args.push("-shortest");
@@ -629,7 +649,11 @@ function thumbnailGap(value, rows, columns, width, height) {
 
 function videoExtension(filename) {
   const ext = path.extname(filename).toLowerCase();
-  return [".mp4", ".mov", ".webm", ".mkv", ".m4v"].includes(ext) ? ext : "";
+  return [...VIDEO_EXTENSIONS, ...IMAGE_EXTENSIONS].includes(ext) ? ext : "";
+}
+
+function isImagePath(filePath) {
+  return IMAGE_EXTENSIONS.includes(path.extname(filePath).toLowerCase());
 }
 
 function safeFilename(filename, ext) {

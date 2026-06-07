@@ -112,10 +112,15 @@ autoLayoutButton.addEventListener("click", () => {
 });
 
 function addFiles(files) {
-  const videoFiles = files.filter((file) => file.type.startsWith("video/") || /\.(mkv|m4v)$/i.test(file.name));
+  const videoFiles = files.filter(
+    (file) =>
+      file.type.startsWith("video/") ||
+      file.type.startsWith("image/") ||
+      /\.(mkv|m4v|jpe?g|png|webp)$/i.test(file.name)
+  );
 
   if (!videoFiles.length) {
-    setMessage("Choose video files.", "error");
+    setMessage("Choose video or image files.", "error");
     return;
   }
 
@@ -168,11 +173,7 @@ function renderFileList() {
     const card = document.createElement("article");
     card.className = "file-card";
 
-    const thumb = document.createElement("video");
-    thumb.src = video.url;
-    thumb.muted = true;
-    thumb.playsInline = true;
-    thumb.preload = "metadata";
+    const thumb = mediaElement(video);
 
     const info = document.createElement("div");
     const name = document.createElement("div");
@@ -227,15 +228,29 @@ function renderPreview(layout) {
       continue;
     }
 
-    const preview = document.createElement("video");
-    preview.src = video.url;
-    preview.muted = true;
-    preview.playsInline = true;
-    preview.preload = "metadata";
-
-    tile.append(preview);
+    tile.append(mediaElement(video));
     previewStrip.append(tile);
   }
+}
+
+function isImageFile(file) {
+  return file.type.startsWith("image/") || /\.(jpe?g|png|webp)$/i.test(file.name);
+}
+
+function mediaElement(video) {
+  if (isImageFile(video.file)) {
+    const image = document.createElement("img");
+    image.src = video.url;
+    image.alt = video.file.name;
+    return image;
+  }
+
+  const element = document.createElement("video");
+  element.src = video.url;
+  element.muted = true;
+  element.playsInline = true;
+  element.preload = "metadata";
+  return element;
 }
 
 function iconButton(text, title, onClick, disabled = false, extraClass = "") {

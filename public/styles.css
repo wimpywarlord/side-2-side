@@ -215,7 +215,8 @@ h2 {
   padding: 8px;
 }
 
-.file-card video {
+.file-card video,
+.file-card img {
   width: 64px;
   height: 64px;
   object-fit: cover;
@@ -365,14 +366,16 @@ input[type="range"] {
   border-color: rgba(255, 255, 255, 0.1);
 }
 
-.preview-tile video {
+.preview-tile video,
+.preview-tile img {
   width: 100%;
   height: 100%;
   display: block;
   object-fit: contain;
 }
 
-.preview-strip.is-cover-fit .preview-tile video {
+.preview-strip.is-cover-fit .preview-tile video,
+.preview-strip.is-cover-fit .preview-tile img {
   object-fit: cover;
 }
 
@@ -584,7 +587,8 @@ input[type="range"] {
     grid-template-columns: 54px minmax(0, 1fr);
   }
 
-  .file-card video {
+  .file-card video,
+  .file-card img {
     width: 54px;
     height: 54px;
   }
